@@ -1,4 +1,5 @@
 name: "Vprofile IAC"
+
 on:
   push:
     branches:
@@ -15,7 +16,6 @@ on:
 env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
   BUCKET_TF_STATE: ${{ secrets.BUCKET_TF_STATE }}
   AWS_REGION: us-east-1
   EKS_CLUSTER: vprofile-eks
@@ -24,56 +24,68 @@ jobs:
   terraform:
     name: "Terraform changes"
     runs-on: ubuntu-latest
+
     defaults:
       run:
         shell: bash
         working-directory: ./terraform
 
     steps:
-      - name: "Checkout Source code"
+
+      # 1) Checkout repository
+      - name: Checkout Source code
         uses: actions/checkout@v4
 
-      - name: "Setup Terraform"
+      # 2) Setup Terraform
+      - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-           terraform_version: "1.6.3"
+          terraform_version: "1.6.3"
 
-        
-
-      - name: "Terraform Init"
+      # 3) Terraform Init
+      - name: Terraform Init
         run: terraform init -backend-config="bucket=${{ env.BUCKET_TF_STATE }}"
 
-      - name: "Terraform format"
+      # 4) Terraform Format
+      - name: Terraform format
         run: terraform fmt -check
-     
-      - name: "Terraform validate"
+
+      # 5) Terraform Validate
+      - name: Terraform validate
         run: terraform validate
-      
-      - name: "Terraform Plan"
+
+      # 6) Terraform Plan
+      - name: Terraform Plan
         id: plan
         run: terraform plan -no-color -out=planfile -input=false
         continue-on-error: true
 
-      - name: "Terraform Plan status"
-        if: steps.plan.outcome == 'failure'
+      # 7) Fail workflow if plan fails
+      - name: Terraform Plan status
+        if: steps.plan.conclusion == 'failure'
         run: exit 1
 
-      - name: "Terraform Apply"
+      # 8) Terraform Apply (Runs only on main branch push)
+      - name: Terraform Apply
+        id: apply
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: terraform apply -input=false -auto-approve -parallelism=1 planfile
 
+      # 9) Configure AWS credentials for kubectl
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
-           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-           aws-region: ${{ env.AWS_REGION }}
-     
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 10) Update kubeconfig (Run only if apply succeeded)
       - name: Get Kube config file
         id: getconfig
-        if: steps.apple.outcome == 'success'
-        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER }} 
+        if: steps.apply.conclusion == 'success'
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER }}
 
+      # 11) Install Ingress Controller (Run only after kubeconfig is ready)
       - name: Install Ingress controller
-        if: steps.apple.outcome == 'success' && steps.getconfig.outcome == 'success'
+        if: steps.apply.conclusion == 'success' && steps.getconfig.conclusion == 'success'
         run: kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.1.3/deploy/static/provider/aws/deploy.yaml
